@@ -1,0 +1,40 @@
+[project]
+name = "fm4a"
+version = "0.1"
+description = "Python package accompanying the AI Foundation Models for Workshop (FM4A)."
+authors = [{name="Simon Pfreundschuh", email="simon.pfreundschuh@colostate.edu"}]
+keywords = ["AI", "weather", "climate", "remote sensing"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "click",
+    "huggingface-hub",
+    "matplotlib",
+    "numpy",
+    "pytest",
+    "requests",
+    "tqdm",
+    "xarray[complete]",
+]
+#scripts = {"fma4"="fma4.cli:fma4"}
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {""="src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.isort]
+profile = "black"
+
+[tool.black]
+line-length = 88
