@@ -5,12 +5,15 @@ fm4a.model
 Provides helper functions instantiate the Prithvi-WxC model and load pre-trained weights.
 """
 from pathlib import Path
+from typing import Optional
 
 from PrithviWxC.dataloaders.merra2 import (
     input_scalers,
     output_scalers,
     static_input_scalers,
 )
+from PrithviWxC.model import PrithviWxC
+import torch
 
 from .definitions import (
     SURFACE_VARS,
@@ -40,7 +43,7 @@ MODEL_PARAMS = {
         "drop_path": 0.0,
         "residual": "climate",
         "masking_mode": "both",
-        "encoder_shifting": True,
+        "encoder_shifting": False,
         "decoder_shifting": True,
         "parameter_dropout": 0.0,
         "positional_encoding": "fourier",
@@ -76,8 +79,9 @@ MODEL_PARAMS = {
 
 def load_model(
         config: str,
-        scaling_factor_dir: Path
-):
+        scaling_factor_dir: Path,
+        weights: Optional[Path] = None
+) -> PrithviWxC:
     """
     Load Prithvi-WxC model.
 
@@ -85,73 +89,45 @@ def load_model(
         config: Name of the model configuration "large" or "small".
         scaling_factor_dir: The path containing the scaling factors.
     """
-    surf_in_scal_path = scaling_factor_dir / "musigma_surface.nc"
-    vert_in_scal_path = scaling_factor_dir / "musigma_vertical.nc"
-    surf_out_scal_path = scaling_factor_dir / "anomaly_variance_surface.nc"
-    vert_out_scal_path = scaling_factor_dir / "anomaly_variance_vertical.nc"
-
-
+    surf_in_scal_path = scaling_factor_dir / "climatology" / "musigma_surface.nc"
+    vert_in_scal_path = scaling_factor_dir / "climatology" / "musigma_vertical.nc"
+    surf_out_scal_path = scaling_factor_dir / "climatology" / "anomaly_variance_surface.nc"
+    vert_out_scal_path = scaling_factor_dir / "climatology" / "anomaly_variance_vertical.nc"
 
     in_mu, in_sig = input_scalers(
-        surface_vars,
-        vertical_vars,
-        levels,
+        SURFACE_VARS,
+        VERTICAL_VARS,
+        LEVELS,
         surf_in_scal_path,
         vert_in_scal_path,
     )
     output_sig = output_scalers(
-        surface_vars,
-        vertical_vars,
-        levels,
+        SURFACE_VARS,
+        VERTICAL_VARS,
+        LEVELS,
         surf_out_scal_path,
         vert_out_scal_path,
     )
     static_mu, static_sig = static_input_scalers(
         surf_in_scal_path,
-        static_surface_vars,
+        STATIC_SURFACE_VARS,
     )
-
     params = MODEL_PARAMS[config]
     params["input_scalers_mu"] = in_mu
     params["input_scalers_sigma"] = in_sig
     params["static_input_scalers_mu"] = static_mu
-    params["static_input_scalers_epsilon"] = static_sig
+    params["static_input_scalers_sigma"] = static_sig
+    params["static_input_scalers_epsilon"] = 0.0
     params["output_scalers"] = output_sig ** 0.5
-    params["masking_ratios"] = 0.0
+    params["mask_ratio_inputs"] = 0.0
     params["mask_ratio_targets"] = 0.0
 
-    model = PrithviWxC(
-        in_channels=config["params"]["in_channels"],
-        input_size_time=config["params"]["input_size_time"],
-        in_channels_static=config["params"]["in_channels_static"],
-        input_scalers_mu=in_mu,
-        input_scalers_sigma=in_sig,
-        input_scalers_epsilon=config["params"]["input_scalers_epsilon"],
-        static_input_scalers_mu=static_mu,
-        static_input_scalers_sigma=static_sig,
-        static_input_scalers_epsilon=config["params"][
-                "static_input_scalers_epsilon"
-        ],
-        output_scalers=output_sig**0.5,
-        n_lats_px=config["params"]["n_lats_px"],
-        n_lons_px=config["params"]["n_lons_px"],
-        patch_size_px=config["params"]["patch_size_px"],
-        mask_unit_size_px=config["params"]["mask_unit_size_px"],
-        mask_ratio_inputs=masking_ratio,
-        mask_ratio_targets=0.0,
-        embed_dim=config["params"]["embed_dim"],
-        n_blocks_encoder=config["params"]["n_blocks_encoder"],
-        n_blocks_decoder=config["params"]["n_blocks_decoder"],
-        mlp_multiplier=config["params"]["mlp_multiplier"],
-        n_heads=config["params"]["n_heads"],
-        dropout=config["params"]["dropout"],
-        drop_path=config["params"]["drop_path"],
-        parameter_dropout=config["params"]["parameter_dropout"],
-        residual=residual,
-        masking_mode=masking_mode,
-        encoder_shifting=encoder_shifting,
-        decoder_shifting=decoder_shifting,
-        positional_encoding=positional_encoding,
-        checkpoint_encoder=[],
-        checkpoint_decoder=[],
-        )
+    model = PrithviWxC(**params)
+
+    if weights is not None:
+        state_dict = torch.load(weights, weights_only=False)
+        if "model_state" in state_dict:
+            state_dict = state_dict["model_state"]
+        model.load_state_dict(state_dict, strict=True)
+
+    return model

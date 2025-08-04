@@ -7,7 +7,7 @@ Defines basic settings for the Prithvi-WxC model.
 
 LEVELS = [
     34.0, 39.0, 41.0, 43.0, 44.0, 45.0, 48.0, 51.0, 53.0, 56.0, 63.0, 68.0, 71.0, 72.0
-]
+][::-1]
 
 SURFACE_VARS = [
     "EFLUX",
