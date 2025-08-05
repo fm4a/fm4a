@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from functools import cache
 import getpass
+import logging
 import os
 from pathlib import Path
 import re
@@ -28,6 +29,9 @@ from .definitions import (
     LEVELS,
     NAN_VALS
 )
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def filename_to_date(path: Path) -> datetime:
@@ -486,7 +490,6 @@ def get_prithvi_wxc_input(
         download_dir: The directory to use to store the raw MERRA 2 data.
         input_data_dir:
     """
-    print(time)
     input_data_dir = Path(input_data_dir)
     if download_dir is None:
         tmpdir = TemporaryDirectory()
@@ -505,6 +508,7 @@ def get_prithvi_wxc_input(
 
         all_steps = list(input_times) + list(output_times)
 
+        LOGGER.info("Downloading MERRA-2 files.")
         merra_files = download_merra_files(all_steps)
 
         days = [time.astype("datetime64[s]").item() for time in all_steps]
@@ -513,13 +517,14 @@ def get_prithvi_wxc_input(
         for day in tqdm(days, desc="Extracting input data"):
             extract_prithvi_wxc_input_data(
                 np.datetime64(day.strftime("%Y-%m-%d")),
+                input_data_dir,
                 download_dir,
-
             )
     finally:
         if tmpdir is not None:
             tmpdir.cleanup()
 
+    LOGGER.info("Downloading climatology files.")
     get_prithvi_wxc_climatology(
         output_times,
         input_data_dir
