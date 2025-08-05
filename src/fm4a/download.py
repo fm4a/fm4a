@@ -4,6 +4,7 @@ fm4a.download
 
 Provides download functionality for MERRA input data for the Prithvi-WxC model.
 """
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from functools import cache
 import getpass
@@ -13,6 +14,7 @@ import re
 from typing import List, Optional, Tuple, Union
 
 import requests
+import requests_cache
 from huggingface_hub import hf_hub_download, snapshot_download
 import numpy as np
 from tqdm import tqdm
@@ -26,6 +28,36 @@ from .definitions import (
     LEVELS,
     NAN_VALS
 )
+
+
+def filename_to_date(path: Path) -> datetime:
+    """
+    Extract time from MERRA-2 filename.
+
+    Args:
+        path: A Path object pointing to a MERRA-2 file.
+
+    Return:
+        A datetime object representing the timestamp of the file.
+    """
+    fname = path.name
+    parts = fname.split(".")
+    date = datetime.strptime(parts[-2], "%Y%m%d")
+    return date
+
+
+def get_previous_file(path: Path) -> Path:
+    """
+    Get path MERRA-2 file from previous day.
+    """
+    fname = path.name
+    parts = fname.split(".")
+    date = datetime.strptime(parts[-2], "%Y%m%d")
+    date = date - timedelta(days=1)
+    parts[-2] = "%Y%m%d"
+    new_fname = date.strftime("%Y/%m/%d/" + ".".join(parts))
+    return path.parent.parent.parent.parent / new_fname
+
 
 def find_file_url(
         base_url: str,
@@ -53,9 +85,10 @@ def find_file_url(
         )
         fname = date.strftime(f"MERRA2_\d\d\d\.{product_name}\.%Y%m%d\.nc4")
     regexp = re.compile(rf'href="({fname})"')
-    response = requests.get(url)
-    response.raise_for_status()
-    matches = regexp.findall(response.text)
+    with requests_cache.CachedSession() as session:
+        response = requests.get(url)
+        response.raise_for_status()
+        matches = regexp.findall(response.text)
     if len(matches) == 0:
         raise ValueError(
             "Found no matching file in %s.",
@@ -111,10 +144,11 @@ def get_credentials() -> Tuple[str, str]:
     return username, password
 
 
-def download_merra2_file(
+def download_merra_file(
         url: str,
         destination: Union[str, Path],
-        force: bool = False
+        force: bool = False,
+        credentials: Optional[Tuple[str, str]] = None
 ) -> Path:
     """
     Download MERRA2 file if it not already exists.
@@ -123,6 +157,8 @@ def download_merra2_file(
         url: String containing the URL of the file to download.
         destination: The folder to which to download the file.
         force: Set to 'True' to force download even if file exists locally.
+        credentials: Credentials to authenticate to the NASA GES DISC service. Avoids query for username
+            and password if provided.
 
     Return:
         A Path object pointing to the local file.
@@ -136,7 +172,11 @@ def download_merra2_file(
     if not force and destination.exists():
         return destination
 
-    auth = get_credentials()
+    if credentials is None:
+        auth = get_credentials()
+    else:
+        auth = credentials
+
     with requests.Session() as session:
         session.auth = auth
         redirect = session.get(url, auth=auth)
@@ -151,30 +191,57 @@ def download_merra2_file(
 
 
 def download_merra_files(
-        time: np.datetime64,
+        time_steps: List[np.datetime64],
         destination: Union[str, Path] = Path(".")
 ) -> List[str]:
     """
-    Download MERRA2 files required to prepare the input data for a given time step.
+    Download MERRA2 files required to prepare the input data for a sequence of time steps.
+
+    Args:
+         time_steps: List of timestamps for which MERRA-2 input data is required.
+         destination: The path to which to download the files.
+
+    Return:
+         A lists containing the paths of the downloaded files.
     """
-    urls = get_merra_urls(time)
+    urls = []
+    for time in time_steps:
+        urls += get_merra_urls(time)
+
+    urls = list(set(urls))
+
     time = time.astype("datetime64[s]").item()
     files = []
 
-    # Dynamic data
-    year = time.year
-    month = time.month
-    day = time.day
-    dest_dyn = Path(destination) / f"{year}/{month:02}/{day:02}"
+    destination = Path(destination)
 
-    for url in tqdm(urls, desc="Downloading dynamic data"):
-        files.append(download_merra2_file(url, dest_dyn))
+    auth = get_credentials()
 
-    # Constant data
-    urls_const = [find_file_url(*MERRA2_PRODUCTS["CONST2DCTM"], None)]
-    dest_const = Path(destination) / f"constant/"
-    for url in tqdm(urls_const, desc="Downloading constant data"):
-        files.append(download_merra2_file(url, dest_const))
+    with ThreadPoolExecutor(max_workers=8) as pool:
+
+        tasks = {}
+
+        for url in urls:
+            fname = url.split("/")[-1]
+            file_date = filename_to_date(Path(fname))
+
+            # Dynamic data
+            year = file_date.year
+            month = file_date.month
+            day = file_date.day
+            dest_dyn = Path(destination) / f"{year}/{month:02}/{day:02}"
+
+            tasks[pool.submit(download_merra_file, url, dest_dyn, credentials=auth)] = url
+
+        merra_const_url = find_file_url(*MERRA2_PRODUCTS["CONST2DCTM"], None)
+        tasks[pool.submit(download_merra_file, merra_const_url, destination, credentials=auth)] = merra_const_url
+
+        files = []
+        for task in tqdm(as_completed(tasks), total=len(tasks), desc="Downloading MERRA-2 files."):
+            try:
+                files.append(task.result())
+            except Exception as exc:
+                raise exc
 
     return files
 
@@ -197,32 +264,34 @@ def get_required_input_files(time: np.datetime64) -> List[str]:
 
 
 def get_prithvi_wxc_climatology(
-        time: np.datetime64,
+        time_steps: List[np.datetime64],
         climatology_dir: Path
 ):
     """
     Download climatology files for given times.
 
     Args:
-        time: A numpy.datetime64 object specifying the time for which to download the climatology data.
+        time_steps: A list of time steps for which to download the climatology
         climatology_dir: The path in which to store the climatology files.
     """
-    date = time.astype("datetime64[s]").item()
-    doy = (date - datetime(date.year, 1, 1)).days + 1
-    hour = (date.hour // 3) * 3
+    for time in time_steps:
+        date = time.astype("datetime64[s]").item()
+        doy = (date - datetime(date.year, 1, 1)).days + 1
+        hour = (date.hour // 3) * 3
 
-    fname_vert = f"climatology/climate_vertical_doy{doy:03}_hour{hour:02}.nc"
-    hf_hub_download(
-        repo_id="ibm-nasa-geospatial/Prithvi-WxC-1.0-2300M",
-        filename=fname_vert,
-        local_dir=climatology_dir
-    )
-    fname_sfc = f"climatology/climate_surface_doy{doy:03}_hour{hour:02}.nc"
-    hf_hub_download(
-        repo_id="ibm-nasa-geospatial/Prithvi-WxC-1.0-2300M",
-        filename=fname_sfc,
-        local_dir=climatology_dir
-    )
+        fname_vert = f"climatology/climate_vertical_doy{doy:03}_hour{hour:02}.nc"
+        hf_hub_download(
+            repo_id="ibm-nasa-geospatial/Prithvi-WxC-1.0-2300M",
+            filename=fname_vert,
+            local_dir=climatology_dir
+        )
+        fname_sfc = f"climatology/climate_surface_doy{doy:03}_hour{hour:02}.nc"
+        hf_hub_download(
+            repo_id="ibm-nasa-geospatial/Prithvi-WxC-1.0-2300M",
+            filename=fname_sfc,
+            local_dir=climatology_dir
+        )
+
 
 def get_prithvi_wxc_scaling_factors(
         scaling_factor_dir: Path
@@ -257,38 +326,44 @@ def get_prithvi_wxc_scaling_factors(
     )
 
 
-def get_prithvi_wxc_input_time_step(
+def extract_prithvi_wxc_input_data(
         time: np.datetime64,
-        input_data_dir: Path,
-        download_dir: Path,
+        merra_data_path: Path,
+        input_data_path: Path,
         force: bool = False
 ):
     """
     Download and prepare Prithvi-WxC input data for a single time step.
 
     Args:
-        time: The time for which to prepare the input data.
-        input_data_dir: The directory to which to write the extracted input data.
-        download_dir: The directory to use to store the raw MERRA 2 data.
+        time: A datetime object specifying the day for which to extract the data.
+        merra_data_path: A Path object pointing to the directory containing the raw MERRA-2 data.
+        input_data_path: The directory to which to write the extracted input data.
         force: Set to 'True' to force input extract even the output files already exist.
 
     """
-    input_data_dir = Path(input_data_dir)
-    download_dir = Path(download_dir)
+    merra_data_path = Path(merra_data)
+    input_data_path = Path(input_data_path)
 
     # Nothing do to if files already exist.
-    input_files = [input_data_dir / input_file for input_file in get_required_input_files(time)]
+    input_files = [input_data_path / input_file for input_file in get_required_input_files(time)]
     if not force and all([input_file.exists() for input_file in input_files]):
         return input_files
-
-    if download_dir is None:
-        tmp = tempfile.TemporaryDirectory()
-        download_dir = Path(tmp.name)
-    else:
-        tmp = None
+    date = time.astype("datetime64[s]").item()
 
     try:
-        merra_files = download_merra_files(time, download_dir)
+        merra_files = sorted(list(merra_data_path.glob(date.strftime("**/MERRA2_*.%Y%m%d.nc"))))
+        const_files = sorted(list(merra_data_path.glob(date.strftime("**/MERRA2_101.const_2d_ctm_Nx.00000000.nc"))))
+
+        if len(merra_files) == 0 or len(const_files) == 0:
+            raise ValueError(
+                "Couldn't find the required MERRA-2 files for %s",
+                time
+            )
+
+        merra_files = merra_file + const_file
+
+
         start_time = time.astype("datetime64[D]").astype("datetime64[h]")
         end_time = start_time + np.timedelta64(24, "h")
         time_steps = np.arange(start_time, end_time, np.timedelta64(3, "h"))
@@ -327,15 +402,24 @@ def get_prithvi_wxc_input_time_step(
                 # Select time steps for three-hourly data, linearly interpolate for hourly data
                 else:
                     method = "nearest"
+
                     if (data.time.data[0] - data.time.data[0].astype("datetime64[h]")) > 0:
+
+                        prev_file = get_previous_file(path)
+                        date = data.time.data[0].astype("datetime64[s]").item()
+                        if prev_file.exists() and date.day == 1:
+                            data = xr.concat([
+                                xr.load_dataset(prev_file),
+                                data
+                            ], dim="time")
+
                         for var in data:
                             data[var].data[1:] = 0.5 * (data[var].data[1:] + data[var].data[:-1])
                         new_time = data.time.data - 0.5 * (data.time.data[1] -  data.time.data[0])
                         data = data.assign_coords(time=new_time)
 
                     times = list(data.time.data)
-                    inds = [times.index(t_s) for t_s in time_steps]
-                    data = data[{"time": inds}]
+                    data = data.interp(time=time_steps, method=method)
 
                 for var in data:
                     if var in NAN_VALS:
@@ -402,31 +486,44 @@ def get_prithvi_wxc_input(
         download_dir: The directory to use to store the raw MERRA 2 data.
         input_data_dir:
     """
-    input_times = [time - np.timedelta64(input_time_step, "h"), time]
-    for input_time in input_times:
-        get_prithvi_wxc_input_time_step(
-            input_time,
-            input_data_dir,
-            download_dir=download_dir
-        )
+    print(time)
+    input_data_dir = Path(input_data_dir)
+    if download_dir is None:
+        tmpdir = TemporaryDirectory()
+        download_dir = Path(tmpdir.name)
+    else:
+        tmpdir = None
+        download_dir = Path(download_dir)
 
-    output_times = time + np.arange(
-        input_time_step,
-        lead_time + 1,
-        input_time_step
-    ).astype("timedelta64[h]")
-    print(output_times)
-    for output_time in output_times:
-        if output_time not in input_times:
-            get_prithvi_wxc_input_time_step(
-                output_time,
-                input_data_dir,
-                download_dir=download_dir
+    try:
+        input_times = [time - np.timedelta64(input_time_step, "h"), time]
+        output_times = time + np.arange(
+            input_time_step,
+            lead_time + 1,
+            input_time_step
+        ).astype("timedelta64[h]")
+
+        all_steps = list(input_times) + list(output_times)
+
+        merra_files = download_merra_files(all_steps)
+
+        days = [time.astype("datetime64[s]").item() for time in all_steps]
+        days = list(set([datetime(year=day.year, month=day.month, day=day.day) for day in days]))
+
+        for day in tqdm(days, desc="Extracting input data"):
+            extract_prithvi_wxc_input_data(
+                np.datetime64(day.strftime("%Y-%m-%d")),
+                download_dir,
+
             )
-        get_prithvi_wxc_climatology(
-            output_time,
-            input_data_dir
-        )
+    finally:
+        if tmpdir is not None:
+            tmpdir.cleanup()
+
+    get_prithvi_wxc_climatology(
+        output_times,
+        input_data_dir
+    )
 
 
 def download_gdps_file(
