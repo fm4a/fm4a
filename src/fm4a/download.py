@@ -346,7 +346,7 @@ def extract_prithvi_wxc_input_data(
         force: Set to 'True' to force input extract even the output files already exist.
 
     """
-    merra_data_path = Path(merra_data)
+    merra_data_path = Path(merra_data_path)
     input_data_path = Path(input_data_path)
 
     # Nothing do to if files already exist.
@@ -517,8 +517,8 @@ def get_prithvi_wxc_input(
         for day in tqdm(days, desc="Extracting input data"):
             extract_prithvi_wxc_input_data(
                 np.datetime64(day.strftime("%Y-%m-%d")),
-                input_data_dir,
                 download_dir,
+                input_data_dir,
             )
     finally:
         if tmpdir is not None:
