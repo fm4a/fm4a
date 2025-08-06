@@ -15,6 +15,7 @@ dependencies = [
     "numpy",
     "pytest",
     "requests",
+    "requests-cache",
     "tqdm",
     "xarray[complete]",
 ]
