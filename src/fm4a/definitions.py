@@ -143,3 +143,39 @@ UNITS = {
     "FROCEAN": "",
     "PHIS": "m"
 }
+
+
+def get_dynamic_variable_name(index: int) -> str:
+    """
+    Get the variable name of one of the 160 variables included in the Prithvi-WxC input.
+
+    Args:
+        index: The index defining the variables.
+
+    Return the name of the variables.
+    """
+    while index < 0:
+        index = index + 160
+    if index < 20:
+        return SURFACE_VARS[index]
+
+    prof_index = (index - 20) // 14
+    return VERTICAL_VARS[index]
+
+
+def get_static_variable_name(index: int) -> str:
+    """
+    Get the variable name of one of the 160 variables included in the Prithvi-WxC input.
+
+    Args:
+        index: The index defining the variables.
+
+    Return the name of the variables.
+    """
+    while index < 0:
+        index = index + 160
+    if index < 20:
+        return SURFACE_VARS[index]
+
+    prof_index = (index - 20) // 14
+    return VERTICAL_VARS[index]

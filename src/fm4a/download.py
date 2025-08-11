@@ -90,7 +90,7 @@ def find_file_url(
         fname = date.strftime(f"MERRA2_\d\d\d\.{product_name}\.%Y%m%d\.nc4")
     regexp = re.compile(rf'href="({fname})"')
     with requests_cache.CachedSession() as session:
-        response = requests.get(url)
+        response = session.get(url)
         response.raise_for_status()
         matches = regexp.findall(response.text)
     if len(matches) == 0:
@@ -116,11 +116,19 @@ def get_merra_urls(time: np.datetime64) -> List[str]:
     """
     List MERRA2 URLS required to prepare the input data for a given time step.
     """
-    m2i3nxasm_url = find_file_url(*MERRA2_PRODUCTS["M2I3NXASM"], time)
-    m2i1nxasm_url = find_file_url(*MERRA2_PRODUCTS["M2I1NXASM"], time)
-    m2t1nxlnd_url = find_file_url(*MERRA2_PRODUCTS["M2T1NXLND"], time)
-    m2t1nxflx_url = find_file_url(*MERRA2_PRODUCTS["M2T1NXFLX"], time)
-    m2t1nxrad_url = find_file_url(*MERRA2_PRODUCTS["M2T1NXRAD"], time)
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        tasks = []
+        tasks.append(pool.submit(find_file_url, *MERRA2_PRODUCTS["M2I3NXASM"], time))
+        tasks.append(pool.submit(find_file_url, *MERRA2_PRODUCTS["M2I1NXASM"], time))
+        tasks.append(pool.submit(find_file_url, *MERRA2_PRODUCTS["M2T1NXLND"], time))
+        tasks.append(pool.submit(find_file_url, *MERRA2_PRODUCTS["M2T1NXFLX"], time))
+        tasks.append(pool.submit(find_file_url, *MERRA2_PRODUCTS["M2T1NXRAD"], time))
+
+        m2i3nxasm_url = tasks[0].result()
+        m2i1nxasm_url = tasks[1].result()
+        m2t1nxlnd_url = tasks[2].result()
+        m2t1nxflx_url = tasks[3].result()
+        m2t1nxrad_url = tasks[4].result()
 
     return [
         m2i3nxasm_url,
@@ -355,122 +363,117 @@ def extract_prithvi_wxc_input_data(
         return input_files
     date = time.astype("datetime64[s]").item()
 
-    try:
-        merra_files = sorted(list(merra_data_path.glob(date.strftime("**/MERRA2_*.%Y%m%d.nc"))))
-        const_files = sorted(list(merra_data_path.glob(date.strftime("**/MERRA2_101.const_2d_ctm_Nx.00000000.nc"))))
+    merra_files = sorted(list(merra_data_path.glob(date.strftime("**/MERRA2_*.%Y%m%d.nc4"))))
+    const_files = sorted(list(merra_data_path.glob(date.strftime("**/MERRA2_101.const_2d_ctm_Nx.00000000.nc4"))))
 
-        if len(merra_files) == 0 or len(const_files) == 0:
-            raise ValueError(
-                "Couldn't find the required MERRA-2 files for %s",
-                time
-            )
-
-        merra_files = merra_file + const_file
-
-
-        start_time = time.astype("datetime64[D]").astype("datetime64[h]")
-        end_time = start_time + np.timedelta64(24, "h")
-        time_steps = np.arange(start_time, end_time, np.timedelta64(3, "h"))
-
-        vars_req = VERTICAL_VARS + SURFACE_VARS + STATIC_SURFACE_VARS
-
-        all_data = []
-        for path in merra_files:
-            with xr.open_dataset(path) as data:
-                if "const" in path.name:
-                    vars = [
-                        var for var in STATIC_SURFACE_VARS if var in data.variables
-                    ]
-                else:
-                    vars = [
-                        var for var in VERTICAL_VARS + SURFACE_VARS if var in data.variables
-                    ]
-
-                data = data[vars + ["time"]]
-                if "lev" in data:
-                    data = data.loc[{"lev": np.array(LEVELS)}]
-                data = data.compute()
-
-                for var in data:
-                    if var in NAN_VALS:
-                        nan = NAN_VALS[var]
-                        data[var].data[:] = np.nan_to_num(data[var].data, nan=nan)
-
-                # For static data without time dependence simply collapse the time dimension.
-                if data.time.size == 1:
-                    data = data[{"time": 0}]
-                # For monthly static data, simply pick the right month
-                elif data.time.size == 12:
-                    month = start_time.astype("datetime64[s]").item().month
-                    data = data[{"time": month - 1}]
-                # Select time steps for three-hourly data, linearly interpolate for hourly data
-                else:
-                    method = "nearest"
-
-                    if (data.time.data[0] - data.time.data[0].astype("datetime64[h]")) > 0:
-
-                        prev_file = get_previous_file(path)
-                        date = data.time.data[0].astype("datetime64[s]").item()
-                        if prev_file.exists() and date.day == 1:
-                            data = xr.concat([
-                                xr.load_dataset(prev_file),
-                                data
-                            ], dim="time")
-
-                        for var in data:
-                            data[var].data[1:] = 0.5 * (data[var].data[1:] + data[var].data[:-1])
-                        new_time = data.time.data - 0.5 * (data.time.data[1] -  data.time.data[0])
-                        data = data.assign_coords(time=new_time)
-
-                    times = list(data.time.data)
-                    data = data.interp(time=time_steps, method=method)
-
-                for var in data:
-                    if var in NAN_VALS:
-                        data[var].data[:] = np.nan_to_num(data[var].data, nan=NAN_VALS[var], copy=True)
-
-                all_data.append(data)
-
-
-        data = xr.merge(all_data, compat="override")
-
-        input_data_dir.mkdir(exist_ok=True, parents=True)
-
-        data_sfc = data[SURFACE_VARS + STATIC_SURFACE_VARS]
-        encoding = {name: {"zlib": True} for name in data_sfc}
-        data_sfc["time"] = (
-            (data_sfc.time.astype("datetime64[m]").data - np.datetime64("2020-01-01", "m")).astype("timedelta64[m]").astype("int32")
+    if len(merra_files) == 0 or len(const_files) == 0:
+        raise ValueError(
+            "Couldn't find the required MERRA-2 files for %s",
+            time
         )
-        encoding["time"] = {
-            "dtype": "int32",
-        }
-        date = data.time.data[0].astype("datetime64[s]").item()
-        output_file = date.strftime("MERRA2_sfc_%Y%m%d.nc")
-        data_sfc.time.attrs = {
-            "begin_time": 0,
-            "begin_date": 20200101,
-        }
-        data_sfc.to_netcdf(input_data_dir / output_file, encoding=encoding)
+
+    merra_files = merra_files + const_files
+
+    start_time = time.astype("datetime64[D]").astype("datetime64[h]")
+    end_time = start_time + np.timedelta64(24, "h")
+    time_steps = np.arange(start_time, end_time, np.timedelta64(3, "h"))
+
+    vars_req = VERTICAL_VARS + SURFACE_VARS + STATIC_SURFACE_VARS
+
+    all_data = []
+    for path in merra_files:
+        with xr.open_dataset(path) as data:
+            if "const" in path.name:
+                vars = [
+                    var for var in STATIC_SURFACE_VARS if var in data.variables
+                ]
+            else:
+                vars = [
+                    var for var in VERTICAL_VARS + SURFACE_VARS if var in data.variables
+                ]
+
+            data = data[vars + ["time"]]
+            if "lev" in data:
+                data = data.loc[{"lev": np.array(LEVELS)}]
+            data = data.compute()
+
+            for var in data:
+                if var in NAN_VALS:
+                    nan = NAN_VALS[var]
+                    data[var].data[:] = np.nan_to_num(data[var].data, nan=nan)
+
+            # For static data without time dependence simply collapse the time dimension.
+            if data.time.size == 1:
+                data = data[{"time": 0}]
+            # For monthly static data, simply pick the right month
+            elif data.time.size == 12:
+                month = start_time.astype("datetime64[s]").item().month
+                data = data[{"time": month - 1}]
+            # Select time steps for three-hourly data, linearly interpolate for hourly data
+            else:
+                method = "nearest"
+
+                if (data.time.data[0] - data.time.data[0].astype("datetime64[h]")) > 0:
+
+                    prev_file = get_previous_file(path)
+                    date = data.time.data[0].astype("datetime64[s]").item()
+                    if prev_file.exists() and date.day == 1:
+                        data = xr.concat([
+                            xr.load_dataset(prev_file),
+                            data
+                        ], dim="time")
+
+                    for var in data:
+                        data[var].data[1:] = 0.5 * (data[var].data[1:] + data[var].data[:-1])
+                    new_time = data.time.data - 0.5 * (data.time.data[1] -  data.time.data[0])
+                    data = data.assign_coords(time=new_time)
+
+                times = list(data.time.data)
+                data = data.interp(time=time_steps, method=method)
+
+            for var in data:
+                if var in NAN_VALS:
+                    data[var].data[:] = np.nan_to_num(data[var].data, nan=NAN_VALS[var], copy=True)
+
+            all_data.append(data)
 
 
-        data_pres = data[VERTICAL_VARS]
-        encoding = {name: {"zlib": True} for name in data_pres}
-        data_pres["time"] = (
-            (data_pres.time.astype("datetime64[m]").data - np.datetime64("2020-01-01", "m")).astype("timedelta64[m]").astype("int32")
-        )
-        encoding["time"] = {
-            "dtype": "int32",
-        }
-        data_pres.time.attrs = {
-            "begin_time": 0,
-            "begin_date": 20200101,
-        }
+    data = xr.merge(all_data, compat="override")
 
-        output_file = date.strftime(date.strftime("MERRA_pres_%Y%m%d.nc"))
-        data_pres.to_netcdf(input_data_dir / output_file, encoding=encoding)
-    finally:
-        if tmp is not None:
-            tmp.cleanup()
+    input_data_path.mkdir(exist_ok=True, parents=True)
+
+    data_sfc = data[SURFACE_VARS + STATIC_SURFACE_VARS]
+    encoding = {name: {"zlib": True} for name in data_sfc}
+    data_sfc["time"] = (
+        (data_sfc.time.astype("datetime64[m]").data - np.datetime64("2020-01-01", "m")).astype("timedelta64[m]").astype("int32")
+    )
+    encoding["time"] = {
+        "dtype": "int32",
+    }
+    date = data.time.data[0].astype("datetime64[s]").item()
+    output_file = date.strftime("MERRA2_sfc_%Y%m%d.nc")
+    data_sfc.time.attrs = {
+        "begin_time": 0,
+        "begin_date": 20200101,
+    }
+    data_sfc.to_netcdf(input_data_path / output_file, encoding=encoding)
+
+
+    data_pres = data[VERTICAL_VARS]
+    encoding = {name: {"zlib": True} for name in data_pres}
+    data_pres["time"] = (
+        (data_pres.time.astype("datetime64[m]").data - np.datetime64("2020-01-01", "m")).astype("timedelta64[m]").astype("int32")
+    )
+    encoding["time"] = {
+        "dtype": "int32",
+    }
+    data_pres.time.attrs = {
+        "begin_time": 0,
+        "begin_date": 20200101,
+    }
+
+    output_file = date.strftime(date.strftime("MERRA_pres_%Y%m%d.nc"))
+    data_pres.to_netcdf(input_data_path / output_file, encoding=encoding)
 
 
 def get_prithvi_wxc_input(
@@ -509,7 +512,7 @@ def get_prithvi_wxc_input(
         all_steps = list(input_times) + list(output_times)
 
         LOGGER.info("Downloading MERRA-2 files.")
-        merra_files = download_merra_files(all_steps)
+        merra_files = download_merra_files(all_steps, download_dir)
 
         days = [time.astype("datetime64[s]").item() for time in all_steps]
         days = list(set([datetime(year=day.year, month=day.month, day=day.day) for day in days]))
