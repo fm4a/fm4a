@@ -1,0 +1,16 @@
+matplotlib
+h5netcdf
+matplotlib
+wget
+pyyaml
+xarray
+scipy
+torch
+tqdm
+pysteps
+cartopy
+jupyterlab
+git+https://github.com/simonpf/prithvi_precip
+git+https://github.com/NASA-IMPACT/Prithvi-WxC.git
+git+https://github.com/IBM/granite-wxc.git
+
