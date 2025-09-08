@@ -10,6 +10,7 @@ tqdm
 pysteps
 cartopy
 jupyterlab
+ipywidgets
 git+https://github.com/simonpf/prithvi_precip
 git+https://github.com/NASA-IMPACT/Prithvi-WxC.git
 git+https://github.com/IBM/granite-wxc.git
