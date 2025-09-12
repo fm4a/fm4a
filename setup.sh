@@ -1,11 +1,12 @@
 #!/bin/bash
-# ESA-NASA Workshop Environment Setup Script
-# This script sets up the required conda environments for the ESA-NASA workshop
+# AI Foundation Models for the Atmosphere
+# This script sets up the required conda environment for the hands-on session of the
+# AI Foundation Models for the Atmosphere workshop.
 
 set +e
 
 # Configuration variables
-REPOSITORY_NAME="hands_on_sessions"
+REPOSITORY_NAME="fm4a"
 REPOSITORY_URL="https://github.com/fm4a/${REPOSITORY_NAME}.git"
 REPOSITORY_PATH="."
 
