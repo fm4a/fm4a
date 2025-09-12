@@ -85,17 +85,3 @@ Navigate to the desired session folder and open the notebooks:
 2. **Session 2 (ECCC Downscaling)**: Use `session_2/` notebooks for downscaling workflows  
 3. **Session 3 (Prithvi Precipitation)**: Explore `session_3/` for precipitation modeling
 
-### Kernel Selection
-
-When running the notebooks, make sure to select the `fm4a` kernel in Jupyter Lab to use the correct environment with all installed dependencies.
-
-## Troubleshooting
-
-- **Conda not found**: Ensure conda is installed and added to your PATH
-- **Download failures**: Check your internet connection and try running the setup script again
-- **Missing packages**: Activate the `fm4a` environment and reinstall requirements: `uv pip install -r requirements.txt`
-- **Kernel not available**: Re-register the kernel: `python -m ipykernel install --user --name fm4a --display-name fm4a`
-
-## Support
-
-For issues with the workshop materials, please refer to the workshop documentation or contact the workshop organizers.
