@@ -11,7 +11,7 @@ pysteps
 cartopy
 jupyterlab
 ipywidgets
-git+https://github.com/simonpf/prithvi_precip
-git+https://github.com/NASA-IMPACT/Prithvi-WxC.git
+git+https://github.com/simonpf/prithvi_precip@bdf0cb275340ab2ff43ff4ff0ee81e87c786300c
+git+https://github.com/simonpf/Prithvi-WxC.git@data_download
 git+https://github.com/IBM/granite-wxc.git
 

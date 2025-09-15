@@ -59,11 +59,6 @@ download_weather_model() {
     return 0
 }
 
-# Setup for Prithvi-WX environment
-setup_weather_environment() {
-    download_weather_model
-    return 0
-}
 
 # Create and setup conda environment
 create_conda_env() {
@@ -99,11 +94,12 @@ create_conda_env() {
         fi
 
         # Special setup for weather environment
-        setup_weather_environment
+	download_weather_model
 
         # Register the kernel
-        python -m ipykernel install --user --name "$env_name" --display-name "$env_name"
+        conda run -n fm4a python -m ipykernel install --user --name "$env_name" --display-name "$env_name"
     fi
+    download_weather_model
 
     log "Setup complete for environment: $env_name"
     return 0
